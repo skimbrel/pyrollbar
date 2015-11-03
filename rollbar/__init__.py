@@ -24,7 +24,7 @@ import requests
 
 import six
 
-from rollbar.lib import dict_merge, map, parse_qs, text, urljoin, urlparse, iteritems
+from rollbar.lib import events, filters, dict_merge, map, parse_qs, text, urljoin, urlparse, iteritems
 
 
 log = logging.getLogger(__name__)
@@ -355,6 +355,9 @@ def init(access_token, environment='production', **kw):
                                    **SETTINGS['locals']['sizes'])
     _transforms.append(shortener)
 
+    events.reset()
+    filters.add_builtin_filters(SETTINGS)
+
     if _initialized:
         # NOTE: Temp solution to not being able to re-init.
         # New versions of pyrollbar will support re-initialization
@@ -422,7 +425,7 @@ def report_message(message, level='error', request=None, extra_data=None, payloa
 
 def send_payload(payload, access_token):
     """
-    Sends a payload object, (the result of calling _build_payload()).
+    Sends a payload object, (the result of calling _build_payload() + _serialize_payload()).
     Uses the configured handler from SETTINGS['handler']
 
     Available handlers:
@@ -431,29 +434,35 @@ def send_payload(payload, access_token):
     - 'agent': writes to a log file to be processed by rollbar-agent
     - 'tornado': calls _send_payload_tornado() (which makes an async HTTP request using tornado's AsyncHTTPClient)
     """
+    payload = events.on_payload(payload)
+    if payload is False:
+        return
+
+    payload_str = _serialize_payload(payload)
+
     handler = SETTINGS.get('handler')
     if handler == 'blocking':
-        _send_payload(payload, access_token)
+        _send_payload(payload_str, access_token)
     elif handler == 'agent':
-        agent_log.error(payload, access_token)
+        agent_log.error(payload_str, access_token)
     elif handler == 'tornado':
         if TornadoAsyncHTTPClient is None:
             log.error('Unable to find tornado')
             return
-        _send_payload_tornado(payload, access_token)
+        _send_payload_tornado(payload_str, access_token)
     elif handler == 'gae':
         if AppEngineFetch is None:
             log.error('Unable to find AppEngine URLFetch module')
             return
-        _send_payload_appengine(payload, access_token)
+        _send_payload_appengine(payload_str, access_token)
     elif handler == 'twisted':
         if TwistedHTTPClient is None:
             log.error('Unable to find twisted')
             return
-        _send_payload_twisted(payload, access_token)
+        _send_payload_twisted(payload_str, access_token)
     else:
         # default to 'thread'
-        thread = threading.Thread(target=_send_payload, args=(payload, access_token))
+        thread = threading.Thread(target=_send_payload, args=(payload_str, access_token))
         thread.start()
 
 
@@ -600,22 +609,27 @@ def _report_exc_info(exc_info, request, extra_data, payload_data, level=None):
     """
     Called by report_exc_info() wrapper
     """
-    # check if exception is marked ignored
-    cls, exc, trace = exc_info
-    if getattr(exc, '_rollbar_ignore', False) or _is_ignored(exc):
-        return
 
     if not _check_config():
         return
 
+    filtered_level = _filtered_level(exc_info[1])
+    if level is None:
+        level = filtered_level
+
+    filtered_exc_info = events.on_exception_info(exc_info,
+                                                 request=request,
+                                                 extra_data=extra_data,
+                                                 payload_data=payload_data,
+                                                 level=level)
+
+    if filtered_exc_info is False:
+        return
+
+    cls, exc, trace = filtered_exc_info
+
     data = _build_base_data(request)
-
-    filtered_level = _filtered_level(exc)
-    if filtered_level:
-        data['level'] = filtered_level
-
-    # explicitly override the level with provided level
-    if level:
+    if level is not None:
         data['level'] = level
 
     # exception info
@@ -661,12 +675,21 @@ def _report_message(message, level, request, extra_data, payload_data):
     if not _check_config():
         return
 
+    filtered_message = events.on_message(message,
+                                         request=request,
+                                         extra_data=extra_data,
+                                         payload_data=payload_data,
+                                         level=level)
+
+    if filtered_message is False:
+        return
+
     data = _build_base_data(request, level=level)
 
     # message
     data['body'] = {
         'message': {
-            'body': message
+            'body': filtered_message
         }
     }
 
@@ -1148,24 +1171,28 @@ def _build_payload(data):
         'data': data
     }
 
+    return payload
+
+
+def _serialize_payload(payload):
     return json.dumps(payload)
 
 
-def _send_payload(payload, access_token):
+def _send_payload(payload_str, access_token):
     try:
-        _post_api('item/', payload, access_token=access_token)
+        _post_api('item/', payload_str, access_token=access_token)
     except Exception as e:
         log.exception('Exception while posting item %r', e)
 
 
-def _send_payload_appengine(payload, access_token):
+def _send_payload_appengine(payload_str, access_token):
     try:
-        _post_api_appengine('item/', payload, access_token=access_token)
+        _post_api_appengine('item/', payload_str, access_token=access_token)
     except Exception as e:
         log.exception('Exception while posting item %r', e)
 
 
-def _post_api_appengine(path, payload, access_token=None):
+def _post_api_appengine(path, payload_str, access_token=None):
     headers = {'Content-Type': 'application/json'}
 
     if access_token is not None:
@@ -1174,16 +1201,16 @@ def _post_api_appengine(path, payload, access_token=None):
     url = urljoin(SETTINGS['endpoint'], path)
     resp = AppEngineFetch(url,
                           method="POST",
-                          payload=payload,
+                          payload=payload_str,
                           headers=headers,
                           allow_truncated=False,
                           deadline=SETTINGS.get('timeout', DEFAULT_TIMEOUT),
                           validate_certificate=SETTINGS.get('verify_https', True))
 
-    return _parse_response(path, SETTINGS['access_token'], payload, resp)
+    return _parse_response(path, SETTINGS['access_token'], payload_str, resp)
 
 
-def _post_api(path, payload, access_token=None):
+def _post_api(path, payload_str, access_token=None):
     headers = {'Content-Type': 'application/json'}
 
     if access_token is not None:
@@ -1191,12 +1218,12 @@ def _post_api(path, payload, access_token=None):
 
     url = urljoin(SETTINGS['endpoint'], path)
     resp = requests.post(url,
-                         data=payload,
+                         data=payload_str,
                          headers=headers,
                          timeout=SETTINGS.get('timeout', DEFAULT_TIMEOUT),
                          verify=SETTINGS.get('verify_https', True))
 
-    return _parse_response(path, SETTINGS['access_token'], payload, resp)
+    return _parse_response(path, SETTINGS['access_token'], payload_str, resp)
 
 
 def _get_api(path, access_token=None, endpoint=None, **params):
@@ -1207,15 +1234,15 @@ def _get_api(path, access_token=None, endpoint=None, **params):
     return _parse_response(path, access_token, params, resp, endpoint=endpoint)
 
 
-def _send_payload_tornado(payload, access_token):
+def _send_payload_tornado(payload_str, access_token):
     try:
-        _post_api_tornado('item/', payload, access_token=access_token)
+        _post_api_tornado('item/', payload_str, access_token=access_token)
     except Exception as e:
         log.exception('Exception while posting item %r', e)
 
 
 @tornado_coroutine
-def _post_api_tornado(path, payload, access_token=None):
+def _post_api_tornado(path, payload_str, access_token=None):
     headers = {'Content-Type': 'application/json'}
 
     if access_token is not None:
@@ -1223,28 +1250,29 @@ def _post_api_tornado(path, payload, access_token=None):
 
     url = urljoin(SETTINGS['endpoint'], path)
 
-    resp = yield TornadoAsyncHTTPClient().fetch(
-        url, body=payload, method='POST', connect_timeout=SETTINGS.get('timeout', DEFAULT_TIMEOUT),
-        request_timeout=SETTINGS.get('timeout', DEFAULT_TIMEOUT)
-    )
+    resp = yield TornadoAsyncHTTPClient().fetch(url,
+                                                body=payload_str,
+                                                method='POST',
+                                                connect_timeout=SETTINGS.get('timeout', DEFAULT_TIMEOUT),
+                                                request_timeout=SETTINGS.get('timeout', DEFAULT_TIMEOUT))
 
     r = requests.Response()
     r._content = resp.body
     r.status_code = resp.code
     r.headers.update(resp.headers)
 
-    _parse_response(path, SETTINGS['access_token'], payload, r)
+    _parse_response(path, SETTINGS['access_token'], payload_str, r)
 
 
-def _send_payload_twisted(payload, access_token):
+def _send_payload_twisted(payload_str, access_token):
     try:
-        _post_api_twisted('item/', payload, access_token=access_token)
+        _post_api_twisted('item/', payload_str, access_token=access_token)
     except Exception as e:
         log.exception('Exception while posting item %r', e)
 
 
 @inlineCallbacks
-def _post_api_twisted(path, payload, access_token=None):
+def _post_api_twisted(path, payload_str, access_token=None):
     headers = {'Content-Type': ['application/json']}
 
     if access_token is not None:
@@ -1253,11 +1281,10 @@ def _post_api_twisted(path, payload, access_token=None):
     url = urljoin(SETTINGS['endpoint'], path)
 
     agent = TwistedHTTPClient(reactor, connectTimeout=SETTINGS.get('timeout', DEFAULT_TIMEOUT))
-    resp = yield agent.request(
-           'POST',
-           url,
-           TwistedHeaders(headers),
-           StringProducer(payload))
+    resp = yield agent.request('POST',
+                               url,
+                               TwistedHeaders(headers),
+                               StringProducer(payload_str))
 
     r = requests.Response()
     r.status_code = resp.code
@@ -1266,7 +1293,7 @@ def _post_api_twisted(path, payload, access_token=None):
     resp.deliverBody(ResponseAccumulator(resp.length, bodyDeferred))
     body = yield bodyDeferred
     r._content = body
-    _parse_response(path, SETTINGS['access_token'], payload, r)
+    _parse_response(path, SETTINGS['access_token'], payload_str, r)
     yield returnValue(None)
 
 
