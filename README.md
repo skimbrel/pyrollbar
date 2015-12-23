@@ -56,6 +56,14 @@ ROLLBAR = {
 }
 ```
 
+If you're using Django REST Framework and would like to have parsed POST variables placed in your output for exception handling, then add these configuration variables in ``settings.py``:
+
+```python
+REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'rollbar.DRF_post_exception_handler'
+}
+```
+
 <!-- RemoveNextIfProject -->
 Be sure to replace ```POST_SERVER_ITEM_ACCESS_TOKEN``` with your project's ```post_server_item``` access token, which you can find in the Rollbar.com interface.
 
@@ -71,7 +79,7 @@ pyramid.includes =
     pyramid_debugtoolbar
     rollbar.contrib.pyramid
 ```
-  
+
 And add these rollbar configuration variables:
 
 ```ini
@@ -143,7 +151,7 @@ bottle.install(rbr) #install globally
 @bottle.get('/')
 def raise_error():
   '''
-  When navigating to /, we'll get a regular 500 page from bottle, 
+  When navigating to /, we'll get a regular 500 page from bottle,
   as well as have the error below listed on Rollbar.
   '''
   raise Exception('Hello, Rollbar!')
@@ -310,7 +318,7 @@ Default: ```True```
   </dd>
   <dt>endpoint</dt>
   <dd>URL items are posted to.
-    
+
 Default: ```https://api.rollbar.com/api/1/item/```
 
   </dd>
@@ -323,11 +331,11 @@ Default: ```https://api.rollbar.com/api/1/item/```
 Valid levels: ```'critical'```, ```'error'```, ```'warning'```, ```'info'```, ```'debug'``` and ```'ignored'```.
 
 Use ```'ignored'``` if you want an Exception (sub)class to never be reported to Rollbar.
-    
+
 Any exceptions not found in this configuration setting will default to ```'error'```.
 
 Django ```settings.py``` example (and Django default):
-        
+
 ```python
 from django.http import Http404
 
@@ -340,17 +348,17 @@ ROLLBAR = {
 ```
 
 In a Pyramid ``ini`` file, define each tuple as an individual whitespace delimited line, for example:
-        
+
 ```
 rollbar.exception_level_filters =
     pyramid.exceptions.ConfigurationError critical
     #...
 ```
-   
+
   </dd>
   <dt>handler</dt>
   <dd>The method for reporting rollbar items to api.rollbar.com
-  
+
 One of:
 
 - blocking -- runs in main thread
@@ -399,7 +407,7 @@ Default: ```thread```
     </dl>
   </dd>
   <dt>root</dt>
-  <dd>Absolute path to the root of your application, not including the final ```/```. 
+  <dd>Absolute path to the root of your application, not including the final ```/```.
   </dd>
   <dt>scrub_fields</dt>
   <dd>List of sensitive field names to scrub out of request params and locals. Values will be replaced with asterisks. If overriding, make sure to list all fields you want to scrub, not just fields you want to add to the default. Param names are converted to lowercase before comparing against the scrub list.
