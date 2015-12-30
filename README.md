@@ -60,7 +60,7 @@ If you're using Django REST Framework and would like to have parsed POST variabl
 
 ```python
 REST_FRAMEWORK = {
-    'EXCEPTION_HANDLER': 'rollbar.DRF_post_exception_handler'
+    'EXCEPTION_HANDLER': 'rollbar.contrib.django_rest_framework.post_exception_handler'
 }
 ```
 
