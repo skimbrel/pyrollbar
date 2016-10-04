@@ -21,7 +21,7 @@ try:
     main_app_loop()
 except IOError:
     rollbar.report_message('Got an IOError in the main loop', 'warning')
-except:
+except Exception:
     # catch-all
     rollbar.report_exc_info()
     # equivalent to rollbar.report_exc_info(sys.exc_info())
@@ -222,7 +222,7 @@ To report a caught exception to Rollbar, use ```rollbar.report_exc_info()```:
 ```python
 try:
     do_something()
-except:
+except Exception:
     rollbar.report_exc_info(sys.exc_info())
     # or if you have a webob-like request object, pass that as well:
     # rollbar.report_exc_info(sys.exc_info(), request)
@@ -273,7 +273,7 @@ def application(environ, start_response):
     try:
         # will raise a NameError about 'bar' not being defined
         foo = bar
-    except:
+    except Exception:
         # report full exception info
         rollbar.report_exc_info(sys.exc_info(), request, extra_data=extra_data)
 
